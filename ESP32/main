@@ -1,0 +1,205 @@
+#include <Arduino.h>
+
+#define SERVO_PIN 25
+#define POT_PIN 34
+
+// ===== SERVO PWM CONFIGURATION =====
+#define SERVO_FREQ 50        // 50 Hz untuk servo
+#define SERVO_RESOLUTION 16  // 16-bit resolution
+#define SERVO_MIN_PULSE 500  // 500 µs = 0°
+#define SERVO_MAX_PULSE 2500 // 2500 µs = 180°
+#define SERVO_MAX_ANGLE 180  // Range servo 0-180°
+
+// Variable tracking
+float currentAngle = 0.0;
+float targetAngle = 0.0;
+float currentPulse = 500.0;
+int lastPotValue = 0;
+unsigned long lastDisplayTime = 0;
+
+// ===== FUNCTION: CONVERT ANGLE TO PULSE WIDTH =====
+int angleToPulse(float angle)
+{
+    // Limit angle range
+    if (angle < 0)
+        angle = 0;
+    if (angle > SERVO_MAX_ANGLE)
+        angle = SERVO_MAX_ANGLE;
+
+    // Map angle (0-180°) to pulse width (500-2500 µs)
+    float pulse_us = SERVO_MIN_PULSE + (angle / SERVO_MAX_ANGLE) * (SERVO_MAX_PULSE - SERVO_MIN_PULSE);
+
+    // Convert to duty cycle for 16-bit (0-65535)
+    // Period = 1/50Hz = 20ms = 20000µs
+    int duty = (int)((pulse_us / 20000.0) * 65535);
+
+    return duty;
+}
+
+// ===== FUNCTION: DISPLAY SERVO STATUS =====
+void displayStatus()
+{
+    int pot = analogRead(POT_PIN);
+
+    Serial.print("\033[2J\033[H"); // Clear screen & move cursor home (ANSI)
+
+    Serial.println("\n");
+    Serial.println("╔══════════════════════════════════════════════════════════════╗");
+    Serial.println("║        SERVO MOTOR ANGLE CONTROL - ESP32                    ║");
+    Serial.println("╠══════════════════════════════════════════════════════════════╣");
+    Serial.printf("║  Potensiometer      : %4d / 4095  (%3d%%)                  ║\n",
+                  pot, (pot * 100) / 4095);
+    Serial.printf("║  Target Angle      : %6.1f°                              ║\n", targetAngle);
+    Serial.printf("║  Current Angle     : %6.1f°                              ║\n", currentAngle);
+    Serial.printf("║  Angle Difference  : %6.1f°                              ║\n",
+                  fabs(targetAngle - currentAngle));
+    Serial.println("╠══════════════════════════════════════════════════════════════╣");
+    Serial.printf("║  Pulse Width       : %7.1f µs  (1/50Hz = 20000µs)       ║\n", currentPulse);
+    Serial.printf("║  Duty Cycle        : %6.3f%%  (16-bit value)            ║\n",
+                  (currentPulse / 20000.0) * 100.0);
+    Serial.printf("║  PWM Frequency     : 50 Hz                                   ║\n");
+    Serial.println("╠══════════════════════════════════════════════════════════════╣");
+
+    // Draw angle bar
+    int barLength = 40;
+    int filledLength = (int)((currentAngle / SERVO_MAX_ANGLE) * barLength);
+
+    Serial.print("║  Angle Bar: [");
+    for (int i = 0; i < barLength; i++)
+    {
+        if (i < filledLength)
+            Serial.print("█");
+        else
+            Serial.print("░");
+    }
+    Serial.printf("]  %3.0f%%   ║\n", (currentAngle / SERVO_MAX_ANGLE) * 100.0);
+
+    Serial.println("║                  0°             90°            180°           ║");
+    Serial.println("╠══════════════════════════════════════════════════════════════╣");
+    Serial.println("║  CONTROL:                                                    ║");
+    Serial.println("║  • Rotate Potentiometer → Servo moves to angle              ║");
+    Serial.println("║  • Hold Potentiometer → Servo holds position                 ║");
+    Serial.println("║  • Smooth transition: 20% per loop (responsive)              ║");
+    Serial.println("║                                                              ║");
+    Serial.println("║  OSCILLOSCOPE:                                               ║");
+    Serial.println("║  • CH1: GPIO25 (PWM Signal)                                  ║");
+    Serial.println("║  • CH2: GND (Reference)                                      ║");
+    Serial.printf("║  • Expected: 50Hz, pulse %5.0f-%5.0f µs                  ║\n",
+                  SERVO_MIN_PULSE, SERVO_MAX_PULSE);
+    Serial.println("╚══════════════════════════════════════════════════════════════╝\n");
+}
+
+// ===== FUNCTION: DISPLAY INITIALIZATION =====
+void displayInit()
+{
+    Serial.println("\n");
+    Serial.println("╔══════════════════════════════════════════════════════════════╗");
+    Serial.println("║              SERVO MOTOR CONTROL SYSTEM                     ║");
+    Serial.println("║                      INITIALIZING...                        ║");
+    Serial.println("╠══════════════════════════════════════════════════════════════╣");
+    Serial.println("║                                                              ║");
+    Serial.println("║  Hardware Configuration:                                     ║");
+    Serial.println("║  ├─ Microcontroller    : ESP32 DevKit                        ║");
+    Serial.println("║  ├─ Servo Motor Pin    : GPIO25 (PWM Output)                 ║");
+    Serial.println("║  ├─ Potentiometer Pin  : GPIO34 (ADC Input)                  ║");
+    Serial.println("║  ├─ PWM Frequency      : 50 Hz (Servo Standard)              ║");
+    Serial.println("║  ├─ Resolution         : 16-bit (0-65535)                    ║");
+    Serial.println("║  ├─ Pulse Range        : 500 - 2500 µs                       ║");
+    Serial.println("║  └─ Angle Range        : 0° - 180°                           ║");
+    Serial.println("║                                                              ║");
+    Serial.println("║  Wiring Diagram:                                             ║");
+    Serial.println("║                                                              ║");
+    Serial.println("║    ESP32              Servo Motor          Potentiometer     ║");
+    Serial.println("║  ┌────────┐         ┌─────────┐          ┌─────────┐        ║");
+    Serial.println("║  │ GPIO25 ├────────→│ Signal  │          │ W (Out) ├─┐      ║");
+    Serial.println("║  │ GPIO34 ├────────→│  +5V   │          │ A (GND) ├─┼──┐   ║");
+    Serial.println("║  │ GND    ├────────→│ GND    │          │ B (+3V) │ │  │   ║");
+    Serial.println("║  └────────┘         └─────────┘          └─────────┘ │  │   ║");
+    Serial.println("║                                             └──┬──────┘  │   ║");
+    Serial.println("║                                                └─────────┘   ║");
+    Serial.println("║                                                              ║");
+    Serial.println("║  System Status:                                              ║");
+    Serial.println("║  ✓ Serial Communication : 115200 bps                         ║");
+    Serial.println("║  ✓ PWM Module          : Initialized                         ║");
+    Serial.println("║  ✓ ADC Input           : Ready                               ║");
+    Serial.println("║  ✓ Servo Motor        : Ready for Control                    ║");
+    Serial.println("║                                                              ║");
+    Serial.println("╚══════════════════════════════════════════════════════════════╝");
+
+    delay(2000);
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(1000);
+
+    displayInit();
+
+// ===== INITIALIZE SERVO PWM =====
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcAttach(SERVO_PIN, SERVO_FREQ, SERVO_RESOLUTION);
+#else
+    ledcSetup(0, SERVO_FREQ, SERVO_RESOLUTION);
+    ledcAttachPin(SERVO_PIN, 0);
+#endif
+
+    // ===== INITIALIZE ADC =====
+    analogReadResolution(12);
+
+    Serial.println("\n ✓ System Ready - Starting Control Loop\n");
+    delay(500);
+}
+
+void loop()
+{
+    unsigned long currentTime = millis();
+
+    // ===== READ POTENTIOMETER =====
+    int pot = analogRead(POT_PIN);
+
+    // ===== MAP POT TO ANGLE (0-4095 → 0-180°) =====
+    targetAngle = (pot / 4095.0) * SERVO_MAX_ANGLE;
+
+    // ===== SMOOTH ANGLE TRANSITION =====
+    if (fabs(currentAngle - targetAngle) > 0.5)
+    {
+        float diff = targetAngle - currentAngle;
+        currentAngle += (diff * 0.2); // 20% smooth per loop
+    }
+    else
+    {
+        currentAngle = targetAngle; // Snap to target when close
+    }
+
+    // Clamp angle
+    if (currentAngle < 0)
+        currentAngle = 0;
+    if (currentAngle > SERVO_MAX_ANGLE)
+        currentAngle = SERVO_MAX_ANGLE;
+
+    // ===== CALCULATE PULSE WIDTH =====
+    currentPulse = SERVO_MIN_PULSE + (currentAngle / SERVO_MAX_ANGLE) * (SERVO_MAX_PULSE - SERVO_MIN_PULSE);
+
+    // ===== CONVERT TO PWM DUTY CYCLE =====
+    int pwmValue = angleToPulse(currentAngle);
+
+// ===== SEND TO SERVO =====
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcWrite(SERVO_PIN, pwmValue);
+#else
+    ledcWrite(0, pwmValue);
+#endif
+
+    // ===== SMART DISPLAY UPDATE =====
+    // Update every 500ms or when pot value changes significantly
+    if ((currentTime - lastDisplayTime) >= 500 || abs(pot - lastPotValue) > 50)
+    {
+        displayStatus();
+        lastDisplayTime = currentTime;
+        lastPotValue = pot;
+    }
+
+    // ===== LOOP TIMING =====
+    delay(20); // 20ms = 50Hz loop
+}
